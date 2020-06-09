@@ -1,0 +1,182 @@
+<html>
+   <head>
+      <title>FME/threejs</title>
+      <style> body { margin: 0; } canvas { width: 100%; height: 100% } </style>
+      <meta charset="utf-8">
+   </head>
+   <body>
+      <script src="js/three.js"></script>
+      <script src="js/controls/OrbitControls.js"></script>
+      <script>
+         var scene = new THREE.Scene();
+         
+         var ambientLight = new THREE.AmbientLight(0x555555);
+         scene.add(ambientLight);
+         
+         var light;
+         var camera;
+         var controls;
+         
+         // We will compute the scene bounding box as geometries are loaded. This allows
+         // us to position the camera in a logical place for the scene, without having
+         // to hard-code the position.
+         var scene_bbox;
+
+         var renderer = new THREE.WebGLRenderer();
+         renderer.setSize( window.innerWidth, window.innerHeight );
+         document.body.appendChild( renderer.domElement );
+         document.addEventListener( 'mousedown', onDocumentMouseDown, false );
+         
+         // As objects are loaded by the JSON loader, they will be stored in this array as well.
+         // This is not necessary if the mouse click handler does not need to know which items
+         // have been clicked on.
+         var objects = [];
+         
+         // The JSONLoader will call this function when it has finished parsing the JSON
+         // data. The loader will pass in the geometry and the list of materials that were
+         // loaded. From these two values, we will create a THREE.Mesh object, which
+         // will be added to the scene.
+         var loader_callback = function( geom, materials )
+         {
+            geom.computeBoundingBox();
+            if( scene_bbox === undefined )
+            {
+               scene_bbox = geom.boundingBox.clone();
+            }
+            else
+            {
+               scene_bbox.expandByPoint( geom.boundingBox.min );
+               scene_bbox.expandByPoint( geom.boundingBox.max );
+            }
+            
+            var mesh;
+            if( materials === undefined )
+            {
+               // There were no materials in the JSON. This will create a basic
+               // material with a random color. We could also have a fixed material
+               // which is used for geometries which don't have their own material.
+               mesh = new THREE.Mesh( geom );
+            }
+            else
+            {
+               mesh = new THREE.Mesh( geom, new THREE.MeshFaceMaterial( materials ) );
+            }
+            
+            objects.push( mesh );
+            scene.add( mesh );
+         }
+         
+         // We don't want to render the scene until all the geometries have loaded.
+         // This function will be passed as the callback to the last load()
+         // function call. It simply calls the above callback to load the object,
+         // and then renders the scene.
+         var final_load = function( geom, materials )
+         {
+            loader_callback( geom, materials );
+ 
+            var midx = ( scene_bbox.min.x + scene_bbox.max.x ) / 2.0;
+            var midy = ( scene_bbox.min.y + scene_bbox.max.y ) / 2.0;
+            var midz = ( scene_bbox.min.z + scene_bbox.max.z ) / 2.0;
+            var x_width = scene_bbox.max.x - scene_bbox.min.x;
+            var y_width = scene_bbox.max.y - scene_bbox.min.y;
+            var z_width = scene_bbox.max.z - scene_bbox.min.z;
+            
+            // Add a camera to the scene.
+            // The two last parameters are the 'near' and 'far' values. Any object whose
+            // distance from the camera lies outside this range will not be rendered. For
+            // now these values are hard-coded. It should be possible to calculate appropriate
+            // values based on the geometry bounding box, similar to the way the initial camera
+            // position and target are calculated.
+            // The initial position of the camera will be above the object in the +Z direction.
+            camera = new THREE.PerspectiveCamera( 75, window.innerWidth/window.innerHeight, 0.1, 1000000 );
+            camera.position.x = midx;
+            camera.position.y = midy;
+            camera.position.z = scene_bbox.max.z + Math.max( Math.max( x_width, y_width ), z_width );
+            
+            // Add a directional light to the scene. This will illuminate the faces
+            // which are pointed at it. Since we are adding the light as a child of
+            // the camera object, the light will always be positioned in the same location
+            // as the camera. This ensures that the faces which are oriented towards
+            // the camera are always illuminated.
+            light = new THREE.DirectionalLight( 0xffffff, 0.9 );
+            light.target.position.set( midx, midy, midz );
+            camera.add( light );
+            
+            scene.add( camera );
+            
+            
+            // This adds an orbit control to the scene. It allows the camera to be moved
+            // by using the mouse:
+            //  1. The left mouse button rotates the camera. 
+            //  2. The right mouse button pans the camera. (also the keyboard arrow keys)
+            //  3. The mouse wheel zooms in/out.
+            controls = new THREE.OrbitControls( camera );
+            controls.damping = 0.2;
+            controls.addEventListener( 'change', render );
+            
+            // Set the controls target to the midpoint of the scene. This is the
+            // point around which the camera will rotate, and the point which it
+            // will zoom to/from.
+            controls.target.set( midx, midy, midz );
+            
+            // Finally update the controls. This will make the camera point at the target point.
+            controls.update();
+            
+            render();
+         }
+         
+         // Here is where the JSON data is loaded. For now it is just a hard-coded list
+         // of relative files; this could definitely be more sophisticated.
+         var loader = new THREE.JSONLoader(true);         
+         // NOTE: When loading models with textures, the textures do not
+         //       appear on the first render() call. They will appear as
+         //       soon as the render() function is called for any reason.
+         //       I'm not sure why this is. I suspect it is the same problem
+         //       which was reported here:
+         //       https://github.com/mrdoob/three.js/issues/4602
+         // The texture path is given relative to this HTML file, not to the
+         // model which is being loaded. It is important that the texture directory
+         // string end with a slash.
+         loader.load("models/Eiffel/model.json", final_load, "./models/Eiffel/textures/" );
+         
+         function render()
+         {
+            renderer.render( scene, camera );
+         }
+         
+         function onDocumentMouseDown( event )
+         {
+            event.preventDefault();
+
+            var vector = new THREE.Vector3(
+                ( event.clientX / window.innerWidth ) * 2 - 1, 
+                - ( event.clientY / window.innerHeight ) * 2 + 1, 
+                0.5 );
+
+            vector.unproject( camera );
+
+            // This uses ray casting to determine which of the items in the objects array a ray
+            // intersects. The ray starts at the camera position and goes in the direction of
+            // the mouse click.
+            var ray = new THREE.Raycaster( camera.position, vector.sub( camera.position ).normalize() );
+            var intersects = ray.intersectObjects( objects );
+
+            if ( intersects.length > 0 )
+            {
+               console.log( "click!" );
+               
+               // This is where click events are handled. The intersects array will contain
+               // a list of objects intersected by a ray starting at the camera position, and
+               // going in the direction the camera is facing. The objects will be sorted by
+               // distance from the camera.
+               // console.log( intersects[0].object );
+               
+               // If the handler does something which changes the display (altering geometry,
+               // materials, lights, camera, etc), then we have to re-render the scene, by
+               // calling the render() function.
+               // render();
+            }
+         }
+      </script>
+   </body>
+</html>
